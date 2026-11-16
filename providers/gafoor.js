@@ -11,15 +11,48 @@ function onSettings() {
     },
     {
       type: "info",
-      label: "Only exact-title, openly licensed Hindi video matches are considered."
+      label: "Searches exact-title videos with supported open-license metadata."
     }
   ]);
 }
 
 function normalize(value) {
-  return (value || "")
+  return String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
+}
+
+function asText(value) {
+  if (Array.isArray(value)) return value.join(" ");
+  return String(value || "");
+}
+
+function isHindiMetadata(value) {
+  var language = asText(value).toLowerCase();
+  return /(^|[^a-z])(hindi|hin)([^a-z]|$)/i.test(language);
+}
+
+function isAllowedLicense(value) {
+  var license = asText(value).toLowerCase();
+
+  return (
+    license.indexOf("creativecommons.org/licenses/by/") !== -1 ||
+    license.indexOf("creativecommons.org/licenses/by-sa/") !== -1 ||
+    license.indexOf("creativecommons.org/licenses/by-nc/") !== -1 ||
+    license.indexOf("creativecommons.org/licenses/by-nc-sa/") !== -1 ||
+    license.indexOf("creativecommons.org/publicdomain/zero/") !== -1
+  );
+}
+
+function getQuality(file) {
+  var height = Number(file.height || 0);
+  var name = String(file.name || "");
+
+  if (height >= 2000 || /2160p|4k/i.test(name)) return "4K";
+  if (height >= 1000 || /1080p/i.test(name)) return "1080p";
+  if (height >= 700 || /720p/i.test(name)) return "720p";
+
+  return "Unknown";
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -28,91 +61,120 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
   if (!key) return Promise.resolve([]);
 
-  var endpoint = mediaType === "tv"
-    ? "https://api.themoviedb.org/3/tv/" + tmdbId +
-      "/season/" + season + "/episode/" + episode
-    : "https://api.themoviedb.org/3/movie/" + tmdbId;
+  var base = "https://api.themoviedb.org/3/";
+  var headers = {};
 
-  return fetch(endpoint + "?api_key=" + encodeURIComponent(key))
-    .then(function (r) {
-      if (!r.ok) throw new Error("TMDB request failed");
-      return r.json();
-    })
-    .then(function (movie) {
-      var title = movie.title || movie.name;
-      if (!title) return [];
+  function tmdb(path) {
+    return fetch(base + path + "?api_key=" + encodeURIComponent(key))
+      .then(function (r) {
+        if (!r.ok) throw new Error("TMDB request failed");
+        return r.json();
+      });
+  }
 
-      var query = 'title:"' + title.replace(/"/g, "") +
-        '" AND mediatype:movies AND licenseurl:*';
+  var titlePromise;
 
-      var searchUrl =
-        "https://archive.org/advancedsearch.php?q=" +
-        encodeURIComponent(query) +
-        "&fl[]=identifier,title&rows=20&output=json";
+  if (mediaType === "tv") {
+    titlePromise = Promise.all([
+      tmdb("tv/" + tmdbId),
+      tmdb("tv/" + tmdbId + "/season/" + season +
+        "/episode/" + episode)
+    ]).then(function (results) {
+      return {
+        title: results[0].name + " " + results[1].name,
+        searchTitle: results[0].name + " " + results[1].name
+      };
+    });
+  } else {
+    titlePromise = tmdb("movie/" + tmdbId).then(function (movie) {
+      return {
+        title: movie.title,
+        searchTitle: movie.title
+      };
+    });
+  }
 
-      return fetch(searchUrl)
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var docs = data.response.docs || [];
+  return titlePromise.then(function (movie) {
+    var title = movie.title;
+    if (!title) return [];
 
-          return Promise.all(docs.map(function (item) {
-            if (normalize(item.title) !== normalize(title)) {
-              return null;
-            }
+    var query =
+      'title:"' + title.replace(/"/g, "") +
+      '" AND mediatype:movies AND licenseurl:*';
 
-            return fetch(
-              "https://archive.org/metadata/" +
-              encodeURIComponent(item.identifier)
-            )
-              .then(function (r) { return r.json(); })
-              .then(function (meta) {
-                var info = meta.metadata || {};
-                var language = String(info.language || "").toLowerCase();
+    var searchUrl =
+      "https://archive.org/advancedsearch.php?q=" +
+      encodeURIComponent(query) +
+      "&fl[]=identifier,title&rows=20&output=json";
 
-                if (!info.licenseurl || !language.includes("hindi")) {
-                  return null;
-                }
+    return fetch(searchUrl)
+      .then(function (r) {
+        if (!r.ok) throw new Error("Archive search failed");
+        return r.json();
+      })
+      .then(function (data) {
+        var docs = data.response && data.response.docs
+          ? data.response.docs : [];
 
-                var files = meta.files || [];
-                var file = files.find(function (f) {
-                  return /\.mp4$/i.test(f.name || "") &&
-                    !f.name.includes("_sample");
-                });
+        return Promise.all(docs.map(function (item) {
+          if (normalize(item.title) !== normalize(title)) {
+            return null;
+          }
 
-                if (!file) return null;
+          return fetch(
+            "https://archive.org/metadata/" +
+            encodeURIComponent(item.identifier)
+          )
+            .then(function (r) {
+              if (!r.ok) return null;
+              return r.json();
+            })
+            .then(function (meta) {
+              if (!meta || !meta.metadata) return null;
 
-                var quality = "Unknown";
-                var filename = file.name || "";
+              var info = meta.metadata;
 
-                if (/2160p|4k/i.test(filename)) quality = "4K";
-                else if (/1080p/i.test(filename)) quality = "1080p";
-                else if (/720p/i.test(filename)) quality = "720p";
+              if (!isAllowedLicense(info.licenseurl)) return null;
+              if (!isHindiMetadata(info.language)) return null;
 
-                if (Number(file.height) >= 2000) quality = "4K";
-                else if (Number(file.height) >= 1000) quality = "1080p";
+              var files = meta.files || [];
 
+              return files.filter(function (file) {
+                return /\.mp4$/i.test(file.name || "") &&
+                  !/_sample|_thumb/i.test(file.name || "");
+              }).map(function (file) {
+                var quality = getQuality(file);
                 var size = file.size
-                  ? (Number(file.size) / 1048576).toFixed(1) + " MB"
-                  : "Unknown";
+                  ? (Number(file.size) / 1073741824).toFixed(2) + " GB"
+                  : "Unknown size";
+
+                var codec = file.video_codec || "Unknown codec";
+                var audio = file.audio_codec || "Not specified";
 
                 return {
                   name: "CVN-Gafoor Indian Streams",
-                  title: title + " • " + quality + " • " + size,
+                  title: title + " • " + quality +
+                    " • " + size +
+                    " • " + codec +
+                    " • Audio: " + audio,
                   url: "https://archive.org/download/" +
-                    item.identifier + "/" +
+                    encodeURIComponent(item.identifier) + "/" +
                     encodeURIComponent(file.name),
-                  quality: quality
+                  quality: quality,
+                  size: size
                 };
               });
-          })).then(function (results) {
-            return results.filter(Boolean);
-          });
+            });
+        })).then(function (groups) {
+          return groups.reduce(function (all, group) {
+            return all.concat(group || []);
+          }, []);
         });
-    })
-    .catch(function (error) {
-      console.log("[Gafoor] Error:", error);
-      return [];
-    });
+      });
+  }).catch(function (error) {
+    console.log("[Gafoor] Error:", error);
+    return [];
+  });
 }
 
 module.exports = { getStreams, onSettings };
