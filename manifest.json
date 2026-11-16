@@ -2,17 +2,18 @@
 {
   "name": "Gafoor Indian Streams",
   "version": "1.0.0",
-  "description": "Indian movies, Hindi web series and Hindi dubbed Hollywood",
+  "description": "Hindi movies and web series",
   "scrapers": [
     {
       "id": "gafoor-hindi",
       "name": "CVN-Gafoor Hindi Streams",
-      "description": "Hindi movies and Hindi dubbed Hollywood",
+      "description": "Indian movies and Hindi dubbed Hollywood",
       "version": "1.0.0",
       "author": "Gafoor",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/gafoor.js",
       "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8", "hls"],
       "contentLanguage": ["hi"],
       "limited": false,
