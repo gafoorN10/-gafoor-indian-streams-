@@ -11,7 +11,7 @@ function onSettings() {
     },
     {
       type: "info",
-      label: "Searches exact-title videos with supported open-license metadata."
+      label: "Exact-title search for openly licensed video metadata."
     }
   ]);
 }
@@ -55,6 +55,37 @@ function getQuality(file) {
   return "Unknown";
 }
 
+function getFileDetails(file, info) {
+  var filename = String(file.name || "").toLowerCase();
+  var details = ["Archive.org"];
+
+  if (/hevc|x265/.test(filename)) {
+    details.push("HEVC");
+  } else if (/x264|avc/.test(filename)) {
+    details.push("H.264");
+  }
+
+  if (/hdr10\+/.test(filename)) {
+    details.push("HDR10+");
+  } else if (/hdr10/.test(filename)) {
+    details.push("HDR10");
+  } else if (/\bhdr\b/.test(filename)) {
+    details.push("HDR");
+  }
+
+  if (/5[ ._-]?1/.test(filename)) {
+    details.push("5.1 Audio");
+  } else if (/2[ ._-]?0/.test(filename)) {
+    details.push("2.0 Audio");
+  }
+
+  if (isHindiMetadata(info.language)) {
+    details.push("Hindi metadata");
+  }
+
+  return details;
+}
+
 function getStreams(tmdbId, mediaType, season, episode) {
   var settings = globalThis.SCRAPER_SETTINGS || {};
   var key = settings.tmdbKey;
@@ -62,14 +93,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
   if (!key) return Promise.resolve([]);
 
   var base = "https://api.themoviedb.org/3/";
-  var headers = {};
 
   function tmdb(path) {
-    return fetch(base + path + "?api_key=" + encodeURIComponent(key))
-      .then(function (r) {
-        if (!r.ok) throw new Error("TMDB request failed");
-        return r.json();
-      });
+    return fetch(
+      base + path + "?api_key=" + encodeURIComponent(key)
+    ).then(function (r) {
+      if (!r.ok) throw new Error("TMDB request failed");
+      return r.json();
+    });
   }
 
   var titlePromise;
@@ -81,21 +112,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
         "/episode/" + episode)
     ]).then(function (results) {
       return {
-        title: results[0].name + " " + results[1].name,
-        searchTitle: results[0].name + " " + results[1].name
+        title: results[0].name + " " + results[1].name
       };
     });
   } else {
     titlePromise = tmdb("movie/" + tmdbId).then(function (movie) {
-      return {
-        title: movie.title,
-        searchTitle: movie.title
-      };
+      return { title: movie.title };
     });
   }
 
   return titlePromise.then(function (movie) {
     var title = movie.title;
+
     if (!title) return [];
 
     var query =
@@ -144,19 +172,22 @@ function getStreams(tmdbId, mediaType, season, episode) {
                   !/_sample|_thumb/i.test(file.name || "");
               }).map(function (file) {
                 var quality = getQuality(file);
-                var size = file.size
-                  ? (Number(file.size) / 1073741824).toFixed(2) + " GB"
+
+                var size = Number(file.size || 0);
+                var sizeLabel = size
+                  ? (size / 1073741824).toFixed(2) + " GB"
                   : "Unknown size";
 
-                var codec = file.video_codec || "Unknown codec";
-                var audio = file.audio_codec || "Not specified";
+                var details = getFileDetails(file, info);
+
+                var streamTitle =
+                  title + " • " + quality +
+                  " • " + sizeLabel +
+                  " • " + details.join(" • ");
 
                 return {
-                  name: "CVN-Gafoor Indian Streams",
-                  title: title + " • " + quality +
-                    " • " + size +
-                    " • " + codec +
-                    " • Audio: " + audio,
+                  name: "Gafoor Indian Streams",
+                  title: streamTitle,
                   url: "https://archive.org/download/" +
                     encodeURIComponent(item.identifier) + "/" +
                     encodeURIComponent(file.name),
@@ -164,6 +195,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
                   size: size
                 };
               });
+            })
+            .catch(function () {
+              return null;
             });
         })).then(function (groups) {
           return groups.reduce(function (all, group) {
@@ -177,4 +211,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
   });
 }
 
-module.exports = { getStreams, onSettings };
+module.exports = {
+  getStreams: getStreams,
+  onSettings: onSettings
+};
